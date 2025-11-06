@@ -11,14 +11,15 @@ and a summary table.
 import io
 import html
 import streamlit as st
-from Bio import SeqIO, pairwise2
+from Bio import SeqIO
+from Bio.Align import PairwiseAligner
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 import pandas as pd
 import streamlit.components.v1 as components
 
 
-st.title("Sanger Sequencing Alignment Tool")
+st.title("Site Directed Mutagenesis Sequence Alignment Tool")
 st.write("Upload your Sanger sequencing read (seq) and a reference snapgene.dna to identify mutations.")
 st.caption("Note: reads are automatically trimmed to first 1000 bases. Option to trim first 30 bases and last 150 bases before alignment. Minimum base quality is fixed at Phred=40 internally. Alignment achieved using Biopython's pairwise2.")
 
@@ -77,12 +78,77 @@ def read_uploaded_record(uploaded_file):
 
 
 def align_best(ref_seq, query_seq):
-    """Return best global alignment (ref_aligned, query_aligned, score) using pairwise2."""
-    alns = pairwise2.align.globalms(ref_seq, query_seq, 2, -1, -5, -0.5, one_alignment_only=True)
-    if not alns:
+    """Return best global alignment (ref_aligned, query_aligned, score) using PairwiseAligner.
+
+    Uses the same scoring as the previous pairwise2.globalms call: match=2, mismatch=-1,
+    gap open=-5, gap extend=-0.5. Returns aligned reference and query strings with '-' for gaps
+    plus the alignment score. If no alignment is found, returns None.
+    """
+    aligner = PairwiseAligner()
+    aligner.mode = 'global'
+    aligner.match_score = 2.0
+    aligner.mismatch_score = -1.0
+    aligner.open_gap_score = -5.0
+    aligner.extend_gap_score = -0.5
+
+    alns = aligner.align(ref_seq, query_seq)
+    if len(alns) == 0:
         return None
-    aln_ref, aln_query, score, start, end = alns[0]
-    return aln_ref, aln_query, score
+    aln = alns[0]
+    score = aln.score
+
+    # Reconstruct gapped sequences from aligned blocks
+    aligned_blocks = aln.aligned
+    ref_blocks = aligned_blocks[0]
+    qry_blocks = aligned_blocks[1]
+
+    ref_idx = 0
+    qry_idx = 0
+    aln_ref = []
+    aln_qry = []
+
+    for (r_start, r_end), (q_start, q_end) in zip(ref_blocks, qry_blocks):
+        # add any gaps/unaligned region before the block
+        while ref_idx < r_start or qry_idx < q_start:
+            if ref_idx < r_start and qry_idx < q_start:
+                # both advanced - take bases (this shouldn't usually happen between blocks)
+                aln_ref.append(ref_seq[ref_idx])
+                aln_qry.append(query_seq[qry_idx])
+                ref_idx += 1
+                qry_idx += 1
+            elif ref_idx < r_start:
+                aln_ref.append(ref_seq[ref_idx])
+                aln_qry.append('-')
+                ref_idx += 1
+            else:
+                aln_ref.append('-')
+                aln_qry.append(query_seq[qry_idx])
+                qry_idx += 1
+
+        # add the aligned block (no gaps inside)
+        for i in range(r_end - r_start):
+            aln_ref.append(ref_seq[r_start + i])
+            aln_qry.append(query_seq[q_start + i])
+        ref_idx = r_end
+        qry_idx = q_end
+
+    # append any trailing tails
+    while ref_idx < len(ref_seq) or qry_idx < len(query_seq):
+        if ref_idx < len(ref_seq) and qry_idx < len(query_seq):
+            aln_ref.append(ref_seq[ref_idx])
+            aln_qry.append(query_seq[qry_idx])
+            ref_idx += 1
+            qry_idx += 1
+        elif ref_idx < len(ref_seq):
+            aln_ref.append(ref_seq[ref_idx])
+            aln_qry.append('-')
+            ref_idx += 1
+        else:
+            aln_ref.append('-')
+            aln_qry.append(query_seq[qry_idx])
+            qry_idx += 1
+
+    return ''.join(aln_ref), ''.join(aln_qry), score
 
 
 def parse_variants(aln_ref, aln_query, phred_quals=None):
@@ -502,7 +568,10 @@ if uploaded_sanger and uploaded_ref:
     phreds = read_rec.letter_annotations.get("phred_quality") if hasattr(read_rec, "letter_annotations") else None
 
     # Align (ref first so aln_ref corresponds to reference)
-    aln = align_best(str(ref_rec.seq), str(read_rec.seq))
+    # Normalize case to avoid mismatches caused by lowercase letters in reference
+    # (SnapGene sometimes stores features in lowercase). Uppercase does not change
+    # sequence length, so it's safe for alignment and position mapping.
+    aln = align_best(str(ref_rec.seq).upper(), str(read_rec.seq).upper())
     if not aln:
         st.error("No alignment found between reference and read.")
         st.stop()
