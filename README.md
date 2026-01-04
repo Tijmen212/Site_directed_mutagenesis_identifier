@@ -2,7 +2,7 @@
 A program (deployed as a streamlit app) to quickly identify any substitutions achieved by site directed mutagenesis (SDM). 
 To help with a project on modeling neurodegenerative conditions through SDM of the TARDBP gene. 
 
- Using next generation sequencing read out from genewiz compared to a snapgene reference file, any substitutions (intended or otherwise) are identified.
+ Using sanger sequencing read out from genewiz compared to a snapgene reference file, any substitutions (intended or otherwise) are identified.
 
  Vibe coded on 06/11/2025 and uses Biopython for alignment.
  
